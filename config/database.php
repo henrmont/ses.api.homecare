@@ -114,6 +114,36 @@ return [
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 
+        'core' => [
+            'driver' => 'pgsql',
+            'url' => env('DB_CORE_URL'),
+            'host' => env('DB_CORE_HOST', '127.0.0.1'),
+            'port' => env('DB_CORE_PORT', '5432'),
+            'database' => env('DB_CORE_DATABASE', 'laravel'),
+            'username' => env('DB_CORE_USERNAME', 'root'),
+            'password' => env('DB_CORE_PASSWORD', ''),
+            'charset' => env('DB_CORE_CHARSET', 'utf8'),
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => env('DB_SSLMODE', 'prefer'),
+        ],
+
+        'storage' => [
+            'driver' => 'pgsql',
+            'url' => env('DB_STORAGE_URL'),
+            'host' => env('DB_STORAGE_HOST', '127.0.0.1'),
+            'port' => env('DB_STORAGE_PORT', '5432'),
+            'database' => env('DB_STORAGE_DATABASE', 'laravel'),
+            'username' => env('DB_STORAGE_USERNAME', 'root'),
+            'password' => env('DB_STORAGE_PASSWORD', ''),
+            'charset' => env('DB_STORAGE_CHARSET', 'utf8'),
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => env('DB_SSLMODE', 'prefer'),
+        ],
+
         'sqlsrv' => [
             'driver' => 'sqlsrv',
             'url' => env('DB_URL'),

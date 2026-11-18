@@ -7,154 +7,261 @@ use App\Models\Professional;
 use App\Models\User;
 use App\Models\UserModule;
 use Exception;
+use Illuminate\Database\Connection;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Spatie\Permission\Models\Role;
 
 class UserService
 {
-    private function homecare()
+    /**
+     * Conexão com o banco padrão (TFD).
+     */
+    private function homecare(): Connection
     {
-        return DB::connection(); 
+        return DB::connection();
     }
 
-    private function auth()
+    /**
+     * Conexão com o banco Core.
+     */
+    private function auth(): Connection
     {
         return DB::connection('auth');
     }
+    
+    protected ?Module $module;
 
-    private $_module;
-
-    public function __construct() {
-        $this->_module = Module::where('name','homecare')->first();
+    public function __construct()
+    {
+        $this->module = Module::where('name', 'homecare')->first();
     }
 
-    public function createUser(Request $request)
+    /**
+     * Criar ou associar usuário ao módulo TFD com seus dados profissionais.
+     */
+    public function createUser(Request $request): JsonResponse
     {
         try {
             $this->homecare()->beginTransaction();
             $this->auth()->beginTransaction();
+
             $user = User::where('email', $request->email)->first();
+            $professionalPayload = $this->getProfessionalPayload($request);
+
             if (!$user) {
-                $user = User::on('auth')->create([
-                    'email' => $request->email,
-                    'name' => $request->email,
-                    'password' => Hash::make('12345678'),
-                    'module_id' => $this->_module->id,
-                ]);
-                $user->userModule()->create(['module_id' => $this->_module->id]);
-                Professional::create([
-                    'user_id' => $user->id,
-                    'name' => $request->name,
-                    'type' => $request->type,
-                    'cns' => $request->cns,
-                    'registration' => $request->registration,
-                    'professional_register' => $request->professional_register,
-                    'cbo' => $request->cbo,
-                ]);
+                // 1. Insere o usuário na tabela 'users' da conexão 'auth' e obtém o ID
+                $userId = $this->auth()
+                    ->table('users')
+                    ->insertGetId([
+                        'email'      => $request->email,
+                        'name'       => $request->email,
+                        'password'   => Hash::make('12345678'),
+                        'module_id'  => $this->module?->id,
+                    ]);
             } else {
-                $user->update(['is_valid' => true]);
-                UserModule::on('auth')->create([
-                    'user_id' => $user->id,
-                    'module_id' => $this->_module->id
-                ]);
-                Professional::create([
-                    'user_id' => $user->id,
-                    'name' => $request->name,
-                    'type' => $request->type,
-                    'cns' => $request->cns,
-                    'registration' => $request->registration,
-                    'professional_register' => $request->professional_register,
-                    'cbo' => $request->cbo,
+                $user->update([
+                    'is_valid' => true,
+                    'module_id' => $this->module?->id,
                 ]);
             }
+
+            $this->auth()
+                ->table('user_modules')
+                ->insert([
+                    'user_id'    => $user ? $user->id : $userId,
+                    'module_id'  => $this->module?->id,
+                ]);
+
+            // 2. Cria o registro do profissional no TFD
+            $professional = Professional::create(array_merge(
+                ['user_id' => $user ? $user->id : $userId],
+                $professionalPayload
+            ));
+
+            // 3. Cria os tipos de profissional associados
+            if ($request->has('types') && is_array($request->types)) {
+                foreach ($request->types as $type) {
+                    $professional->types()->create([
+                        'type' => $type,
+                    ]);
+                }
+            }
+
             $this->homecare()->commit();
             $this->auth()->commit();
-            return response()->json(['message' => 'Usuário criado com sucesso.'], 200);
+
+            return response()->json(['message' => 'Usuário criado com sucesso.'], JsonResponse::HTTP_OK);
         } catch (Exception $e) {
             $this->homecare()->rollBack();
             $this->auth()->rollBack();
-            return response()->json(['message' => $e->getMessage()], 400);
+
+            Log::error('Erro ao criar usuário: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+
+            return response()->json(['message' => $e->getMessage()], JsonResponse::HTTP_BAD_REQUEST);
         }
     }
 
-    public function lockUser(User $user)
+    /**
+     * Alternar trava de edição (is_editable) do usuário no módulo TFD.
+     */
+    public function lockUser(User $user): JsonResponse
     {
         try {
-            $user_module = $user->userModule()->where('module_id',$this->_module->id)->first();
-            $user_module->update(['is_editable' => !$user_module->is_editable]);
-            return response()->json(['message' => 'Usuário '.($user_module->is_editable ? 'destravado' : 'travado').' com sucesso.'], 200);
+            $userModule = $user->userModule()
+                ->where('module_id', $this->module?->id)
+                ->firstOrFail();
+
+            $userModule->update([
+                'is_editable' => !$userModule->is_editable,
+            ]);
+
+            $statusText = $userModule->is_editable ? 'destravado' : 'travado';
+
+            return response()->json(['message' => "Usuário {$statusText} com sucesso."], JsonResponse::HTTP_OK);
         } catch (Exception $e) {
-            return response()->json(['message' => $e->getMessage()], 400);
+            Log::error('Erro ao travar/destravar usuário: ' . $e->getMessage());
+
+            return response()->json(['message' => $e->getMessage()], JsonResponse::HTTP_BAD_REQUEST);
         }
     }
 
-    public function validateUser(User $user)
+    /**
+     * Alternar validação de acesso (is_valid) do usuário no módulo TFD.
+     */
+    public function validateUser(User $user): JsonResponse
     {
         try {
-            $user_module = $user->userModule()->where('module_id',$this->_module->id)->first();
-            $user_module->update(['is_valid' => !$user_module->is_valid]);
-            return response()->json(['message' => 'Usuário '.($user_module->is_valid ? 'validado' : 'invalidado').' com sucesso.'], 200);
-        } catch (Exception $e) {
-            return response()->json(['message' => $e->getMessage()], 400);
-        }
-    }
+            $userModule = $user->userModule()
+                ->where('module_id', $this->module?->id)
+                ->firstOrFail();
 
-    public function updateUser(User $user, Request $request)
-    {
-        try {
-            if ($user->professional()->exists()) {
-                $user->professional()->update([
-                    'name' => $request->name,
-                    'type' => $request->type,
-                    'cns' => $request->cns,
-                    'registration' => $request->registration,
-                    'professional_register' => $request->professional_register,
-                    'cbo' => $request->cbo,
-                ]);
-            } else {
-                $user->professional()->create([
-                    'name' => $request->name,
-                    'type' => $request->type,
-                    'cns' => $request->cns,
-                    'registration' => $request->registration,
-                    'professional_register' => $request->professional_register,
-                    'cbo' => $request->cbo,
-                ]);
+            $userModule->update([
+                'is_valid' => !$userModule->is_valid,
+            ]);
+
+            if (!$userModule->is_valid) {
+                $user->update(['module_id' => null]);
             }
-            return response()->json(['message' => 'Usuário atualizado com sucesso.'], 200);
+
+            $hasAnyValidModule = $user->userModule()->where('is_valid', true)->exists();
+            $user->update(['is_valid' => $hasAnyValidModule]);
+
+            $statusText = $userModule->is_valid ? 'validado' : 'invalidado';
+
+            return response()->json(['message' => "Usuário {$statusText} com sucesso."], JsonResponse::HTTP_OK);
         } catch (Exception $e) {
-            return response()->json(['message' => $e->getMessage()], 400);
+            Log::error('Erro ao validar usuário: ' . $e->getMessage());
+
+            return response()->json(['message' => $e->getMessage()], JsonResponse::HTTP_BAD_REQUEST);
         }
     }
 
-    public function deleteUser(User $user)
+    /**
+     * Atualizar dados do perfil profissional e sincronizar lotações associadas ao usuário.
+     */
+    public function updateUser(User $user, Request $request): JsonResponse
+    {
+        try {
+            $this->homecare()->beginTransaction();
+
+            // 1. Atualiza ou cria o registro do profissional
+            $professional = $user->professional()->updateOrCreate(
+                ['user_id' => $user->id],
+                $this->getProfessionalPayload($request)
+            );
+
+            // 2. Sincroniza as lotações (ProfessionalType)
+            if ($request->has('types') && is_array($request->types)) {
+                // Remove os tipos antigos
+                $professional->types()->delete();
+
+                // Prepara e insere os novos tipos
+                $newTypes = array_map(function ($type) {
+                    return ['type' => $type];
+                }, $request->types);
+
+                $professional->types()->createMany($newTypes);
+            }
+
+            $this->homecare()->commit();
+
+            return response()->json(['message' => 'Usuário atualizado com sucesso.'], JsonResponse::HTTP_OK);
+        } catch (Exception $e) {
+            $this->homecare()->rollBack();
+
+            Log::error('Erro ao atualizar usuário: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+
+            return response()->json(['message' => $e->getMessage()], JsonResponse::HTTP_BAD_REQUEST);
+        }
+    }
+
+    /**
+     * Remover vínculo do usuário com o módulo TFD e seus dados profissionais.
+     */
+    public function deleteUser(User $user): JsonResponse
     {
         try {
             DB::beginTransaction();
-            $user_module = $user->userModule()->where('module_id',$this->_module->id)->first();
-            if ($user->module_id == $user_module->module_id)
-                $user->update(['module_id' => null]);
-            $user_module->delete();
+
+            $userModule = $user->userModule()
+                ->where('module_id', $this->module?->id)
+                ->first();
+
+            if ($userModule) {
+                if ($user->module_id === $userModule->module_id) {
+                    $user->update(['module_id' => null]);
+                }
+
+                $userModule->delete();
+            }
+
             $user->professional()->delete();
-            if ($user->userModule()->doesntExist())
+
+            if ($user->userModule()->doesntExist()) {
                 $user->update(['is_valid' => false]);
+            }
+
             DB::commit();
-            return response()->json(['message' => 'Usuário excluído com sucesso.'], 200);
+
+            return response()->json(['message' => 'Usuário excluído com sucesso.'], JsonResponse::HTTP_OK);
         } catch (Exception $e) {
             DB::rollBack();
-            return response()->json(['message' => $e->getMessage()], 400);
+            Log::error('Erro ao excluir usuário: ' . $e->getMessage());
+
+            return response()->json(['message' => $e->getMessage()], JsonResponse::HTTP_BAD_REQUEST);
         }
     }
 
-    public function rolesUser(User $user, Request $request)
+    /**
+     * Sincronizar perfis e permissões do usuário.
+     */
+    public function rolesUser(User $user, Request $request): JsonResponse
     {
         try {
-            $user->syncRoles(Role::findMany($request->roles));
-            return response()->json(['message' => 'Regras do usuário atualizadas com sucesso.'], 200);
+            $roles = Role::findMany($request->input('roles', []));
+            $user->syncRoles($roles);
+
+            return response()->json(['message' => 'Regras do usuário atualizadas com sucesso.'], JsonResponse::HTTP_OK);
         } catch (Exception $e) {
-            return response()->json(['message' => $e->getMessage()], 400);
+            Log::error('Erro ao atualizar regras do usuário: ' . $e->getMessage());
+
+            return response()->json(['message' => $e->getMessage()], JsonResponse::HTTP_BAD_REQUEST);
         }
+    }
+
+    /**
+     * Extrai e formata os dados do profissional a partir do Request.
+     */
+    private function getProfessionalPayload(Request $request): array
+    {
+        return $request->only([
+            'name',
+            'cns',
+            'registration',
+        ]);
     }
 }
