@@ -33,7 +33,7 @@ class UserController extends Controller
         $this->authorize('homecare/usuário listar');
 
         $users = User::query()
-            ->tfd()
+            ->homecare()
             ->with(['roles', 'professional.types'])
             ->where('email', '!=', 'admin@homecare.com')
             ->latest('id')
@@ -131,7 +131,7 @@ class UserController extends Controller
         $this->authorize('homecare/usuário listar');
 
         $exists = User::query()
-            ->tfd()
+            ->homecare()
             ->where('email', $email)
             ->when($currentEmail, fn ($query) => $query->where('email', '!=', $currentEmail))
             ->exists();
